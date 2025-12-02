@@ -1,0 +1,52 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Documentation (README.md 제외)
+# docs 폴더 내의 모든 .md 파일 제외 (단, README.md는 예외)
+docs/**/*.md
+!README.md
+!**/README.md
+CACHE_CLEAR_INSTRUCTIONS.md
+
+# Dependencies
+node_modules
+dist
+dist-ssr
+*.local
+
+# Environment variables
+.env
+.env.local
+.env.production
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Build output
+dist/
+
+# Extension packages
+*.crx
+*.pem
+*.zip
+
+# OS
+Thumbs.db
+
+
+
+
