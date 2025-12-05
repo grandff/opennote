@@ -1,6 +1,6 @@
 /// <reference types="chrome"/>
 
-import { MAX_AUDIO_FILE_SIZE } from '@/utils/constants';
+import { MAX_AUDIO_FILE_SIZE, RECORDING_LIMITS } from '@/utils/constants';
 
 let mediaRecorder: MediaRecorder | null = null;
 let audioChunks: Blob[] = [];
@@ -9,6 +9,168 @@ let sourceNode: MediaStreamAudioSourceNode | null = null;
 let currentStream: MediaStream | null = null;
 let isManualStop: boolean = false;
 let finalBlob: Blob | null = null;
+
+// ===== 세그먼트 분할 관련 변수 =====
+let segmentIndex: number = 0;
+let segmentStartTime: number = 0;
+let recordingStartTime: number = 0;
+let isPremiumUser: boolean = false;
+let savedSegments: Array<{ index: number; base64: string; startTime: number; endTime: number; size: number }> = [];
+
+// ===== Realtime API를 위한 PCM 오디오 관련 변수 =====
+let pcmAudioContext: AudioContext | null = null;
+let pcmSourceNode: MediaStreamAudioSourceNode | null = null;
+let pcmProcessor: ScriptProcessorNode | null = null;
+
+/**
+ * Float32Array를 PCM16 Base64로 변환
+ * OpenAI Realtime API 요구사항: PCM16 24kHz mono
+ */
+function float32ToPCM16Base64(float32Array: Float32Array): string {
+  // Float32 (-1.0 ~ 1.0) → Int16 (-32768 ~ 32767)
+  const pcm16 = new Int16Array(float32Array.length);
+  for (let i = 0; i < float32Array.length; i++) {
+    const s = Math.max(-1, Math.min(1, float32Array[i]));
+    pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+  }
+  
+  // Int16Array → Uint8Array → Base64
+  const uint8 = new Uint8Array(pcm16.buffer);
+  let binary = '';
+  for (let i = 0; i < uint8.length; i++) {
+    binary += String.fromCharCode(uint8[i]);
+  }
+  return btoa(binary);
+}
+
+/**
+ * Realtime API용 PCM 오디오 스트림 시작
+ * Web Audio API의 ScriptProcessorNode를 사용하여 PCM16 24kHz mono 데이터 추출
+ */
+function startPCMAudioStream(stream: MediaStream): void {
+  try {
+    // 24kHz AudioContext 생성
+    pcmAudioContext = new AudioContext({ sampleRate: 24000 });
+    pcmSourceNode = pcmAudioContext.createMediaStreamSource(stream);
+    
+    // ScriptProcessor로 PCM 데이터 추출 (bufferSize: 4096 → 약 170ms @ 24kHz)
+    pcmProcessor = pcmAudioContext.createScriptProcessor(4096, 1, 1);
+    
+    pcmProcessor.onaudioprocess = (event) => {
+      const float32Data = event.inputBuffer.getChannelData(0);
+      const pcm16Base64 = float32ToPCM16Base64(float32Data);
+      
+      // Background로 PCM 오디오 청크 전송
+      chrome.runtime.sendMessage({
+        type: 'REALTIME_AUDIO_CHUNK',
+        audioChunk: pcm16Base64,
+        chunkSize: float32Data.length * 2, // PCM16 = 2 bytes per sample
+        format: 'pcm16_24khz_mono',
+      }).catch(() => {
+        // 전송 실패해도 무시 (녹음에 영향 없음)
+      });
+    };
+    
+    // 연결: source → processor → destination (destination 연결 필수)
+    pcmSourceNode.connect(pcmProcessor);
+    pcmProcessor.connect(pcmAudioContext.destination);
+    
+    logToBackground('🎙️ PCM audio stream started (24kHz mono)');
+  } catch (error) {
+    console.warn('[Realtime] Error starting PCM audio stream:', error);
+    // PCM 스트림 오류가 나도 메인 녹음에 영향 없음
+  }
+}
+
+/**
+ * Realtime API용 PCM 오디오 스트림 정지
+ */
+function stopPCMAudioStream(): void {
+  try {
+    if (pcmProcessor) {
+      pcmProcessor.disconnect();
+      pcmProcessor = null;
+    }
+    if (pcmSourceNode) {
+      pcmSourceNode.disconnect();
+      pcmSourceNode = null;
+    }
+    if (pcmAudioContext && pcmAudioContext.state !== 'closed') {
+      pcmAudioContext.close();
+      pcmAudioContext = null;
+    }
+    logToBackground('🎙️ PCM audio stream stopped');
+  } catch (error) {
+    console.warn('[Realtime] Error stopping PCM audio stream:', error);
+  }
+}
+
+/**
+ * 현재 세그먼트 저장 (20분마다 호출)
+ * 현재까지 수집된 audioChunks를 Blob으로 만들어 저장하고, audioChunks를 비움
+ */
+async function saveCurrentSegment(): Promise<void> {
+  if (audioChunks.length === 0) {
+    logToBackground('⚠️ No audio chunks to save for segment');
+    return;
+  }
+
+  const elapsedSeconds = Math.floor((Date.now() - recordingStartTime) / 1000);
+  
+  // 현재 청크들로 Blob 생성
+  const segmentBlob = new Blob(audioChunks, { type: 'audio/webm;codecs=opus' });
+  
+  // Blob을 Base64로 변환
+  const arrayBuffer = await segmentBlob.arrayBuffer();
+  const uint8Array = new Uint8Array(arrayBuffer);
+  
+  const chunkSize = 0x8000;
+  let base64String = '';
+  for (let i = 0; i < uint8Array.length; i += chunkSize) {
+    const chunk = uint8Array.subarray(i, Math.min(i + chunkSize, uint8Array.length));
+    base64String += String.fromCharCode.apply(null, Array.from(chunk));
+  }
+  base64String = btoa(base64String);
+  
+  // 세그먼트 저장
+  savedSegments.push({
+    index: segmentIndex,
+    base64: base64String,
+    startTime: segmentStartTime,
+    endTime: elapsedSeconds,
+    size: arrayBuffer.byteLength,
+  });
+  
+  logToBackground(`📦 Segment ${segmentIndex} saved: ${segmentStartTime}s - ${elapsedSeconds}s (${(arrayBuffer.byteLength / 1024 / 1024).toFixed(2)}MB)`);
+  
+  // 다음 세그먼트 준비
+  segmentIndex++;
+  segmentStartTime = elapsedSeconds;
+  
+  // 청크 배열 비우기 (새로운 세그먼트 시작)
+  // 주의: MediaRecorder는 계속 실행 중이므로 새 청크는 계속 추가됨
+  audioChunks = [];
+  
+  // Background에 세그먼트 저장 완료 알림
+  chrome.runtime.sendMessage({
+    type: 'SEGMENT_SAVED',
+    segmentIndex: segmentIndex - 1,
+    totalSegments: savedSegments.length,
+    elapsedSeconds,
+  }).catch(() => {});
+}
+
+/**
+ * 세그먼트 분할이 필요한지 확인 (20분마다)
+ */
+function shouldSplitSegment(): boolean {
+  if (!isPremiumUser) return false;
+  
+  const elapsedSeconds = Math.floor((Date.now() - recordingStartTime) / 1000);
+  const currentSegmentDuration = elapsedSeconds - segmentStartTime;
+  
+  return currentSegmentDuration >= RECORDING_LIMITS.SEGMENT_DURATION;
+}
 
 // 로그를 Background로 전송하는 헬퍼 함수
 function logToBackground(message: string, data?: any) {
@@ -39,9 +201,27 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       sendResponse({ success: true });
       break;
 
+    case 'SET_PREMIUM_USER':
+      isPremiumUser = message.isPremium === true;
+      logToBackground(`👤 Premium user: ${isPremiumUser}`);
+      sendResponse({ success: true });
+      break;
+
     case 'START_RECORDING':
       (async () => {
         logToBackground('🔴 START_RECORDING message received');
+        
+        // 세그먼트 관련 초기화
+        segmentIndex = 0;
+        segmentStartTime = 0;
+        recordingStartTime = Date.now();
+        savedSegments = [];
+        
+        // isPremiumUser는 START_RECORDING 전에 SET_PREMIUM_USER로 설정됨
+        if (message.isPremium !== undefined) {
+          isPremiumUser = message.isPremium === true;
+        }
+        logToBackground(`👤 Recording as ${isPremiumUser ? 'premium' : 'free'} user`);
         
         // 이전 녹음이 있으면 완전히 정리
         if (mediaRecorder && mediaRecorder.state !== 'inactive') {
@@ -135,15 +315,54 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           console.log('Offscreen: ✅ Encoded to base64, length:', base64String.length);
           logToBackground(`📤 Sending audio data: ${arrayBuffer.byteLength} bytes → ${base64String.length} chars base64`);
           
-          sendResponse({ 
-            success: true, 
-            audioDataBase64: base64String,
-            audioDataSize: arrayBuffer.byteLength,
-            mimeType: blob.type,
-          });
+          // 세그먼트가 있는 경우 (유료 사용자, 20분 이상 녹음)
+          const elapsedSeconds = Math.floor((Date.now() - recordingStartTime) / 1000);
+          
+          // 마지막 세그먼트 추가 (현재 블롭)
+          if (isPremiumUser && savedSegments.length > 0) {
+            savedSegments.push({
+              index: segmentIndex,
+              base64: base64String,
+              startTime: segmentStartTime,
+              endTime: elapsedSeconds,
+              size: arrayBuffer.byteLength,
+            });
+            
+            logToBackground(`📦 Total segments: ${savedSegments.length}`);
+            
+            sendResponse({ 
+              success: true, 
+              audioDataBase64: base64String,
+              audioDataSize: arrayBuffer.byteLength,
+              mimeType: blob.type,
+              segments: savedSegments,
+              totalSegments: savedSegments.length,
+            });
+          } else {
+            // 단일 파일 (무료 사용자 또는 20분 이하)
+            sendResponse({ 
+              success: true, 
+              audioDataBase64: base64String,
+              audioDataSize: arrayBuffer.byteLength,
+              mimeType: blob.type,
+            });
+          }
         } catch (error: any) {
           console.error('Offscreen: Error in STOP_RECORDING:', error);
           sendResponse({ error: error.message || 'Unknown error' });
+        }
+      })();
+      return true;
+
+    case 'SAVE_SEGMENT':
+      // 세그먼트 저장 요청 (20분마다 호출됨)
+      (async () => {
+        try {
+          await saveCurrentSegment();
+          sendResponse({ success: true, segmentIndex });
+        } catch (error: any) {
+          console.error('Offscreen: Error saving segment:', error);
+          sendResponse({ error: error.message });
         }
       })();
       return true;
@@ -257,6 +476,10 @@ async function startRecording(streamId: string): Promise<void> {
       // 스피커 연결 실패해도 녹음은 계속 진행
     }
 
+    // ===== Realtime API용 PCM 오디오 스트림 시작 =====
+    // 별도의 AudioContext를 사용하여 24kHz PCM 데이터 추출
+    startPCMAudioStream(stream);
+
     // MediaRecorder 생성 (더 작은 간격으로 데이터 수집)
     const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') 
       ? 'audio/webm;codecs=opus' 
@@ -271,7 +494,7 @@ async function startRecording(streamId: string): Promise<void> {
 
     audioChunks = [];
 
-    mediaRecorder.ondataavailable = (event) => {
+    mediaRecorder.ondataavailable = async (event) => {
       if (event.data && event.data.size > 0) {
         audioChunks.push(event.data);
         
@@ -294,6 +517,19 @@ async function startRecording(streamId: string): Promise<void> {
             }).catch(() => {});
           }
         }
+        
+        // ===== 세그먼트 분할 체크 (유료 사용자, 20분마다) =====
+        if (shouldSplitSegment()) {
+          logToBackground('📦 Splitting segment at 20 minutes...');
+          try {
+            await saveCurrentSegment();
+          } catch (error) {
+            console.warn('[Segment] Error saving segment:', error);
+            // 세그먼트 저장 실패해도 녹음은 계속됨
+          }
+        }
+        
+        // Note: Realtime API용 PCM 오디오는 별도의 ScriptProcessorNode에서 처리됨
       }
     };
 
@@ -513,7 +749,10 @@ async function stopRecording(): Promise<Blob> {
 function cleanup() {
   console.log('Offscreen: Cleaning up...');
   
-  // 오디오 컨텍스트 정리
+  // ===== Realtime API용 PCM 스트림 정리 =====
+  stopPCMAudioStream();
+  
+  // 오디오 컨텍스트 정리 (스피커 출력용)
   if (sourceNode) {
     try {
       sourceNode.disconnect();

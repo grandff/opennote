@@ -1,0 +1,15 @@
+{
+  "appName": {
+    "message": "opennote - Free AI Transcription",
+    "description": "The name of the extension"
+  },
+  "appShortName": {
+    "message": "opennote",
+    "description": "The short name of the extension"
+  },
+  "appDescription": {
+    "message": "Record browser audio and convert it to text for free.",
+    "description": "The description of the extension"
+  }
+}
+

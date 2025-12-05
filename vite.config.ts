@@ -30,6 +30,14 @@ export default defineConfig(({ mode }) => {
       // 백엔드 API 설정 (ngrok 또는 프로덕션 URL)
       'import.meta.env.VITE_BACKEND_API_URL': JSON.stringify(env.VITE_BACKEND_API_URL || 'http://localhost:8080'),
       'import.meta.env.VITE_EXTENSION_API_KEY': JSON.stringify(env.VITE_EXTENSION_API_KEY || ''),
+      // Firebase 설정
+      'import.meta.env.VITE_FIREBASE_API_KEY': JSON.stringify(env.VITE_FIREBASE_API_KEY || ''),
+      'import.meta.env.VITE_FIREBASE_AUTH_DOMAIN': JSON.stringify(env.VITE_FIREBASE_AUTH_DOMAIN || ''),
+      'import.meta.env.VITE_FIREBASE_PROJECT_ID': JSON.stringify(env.VITE_FIREBASE_PROJECT_ID || ''),
+      'import.meta.env.VITE_FIREBASE_STORAGE_BUCKET': JSON.stringify(env.VITE_FIREBASE_STORAGE_BUCKET || ''),
+      'import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID': JSON.stringify(env.VITE_FIREBASE_MESSAGING_SENDER_ID || ''),
+      'import.meta.env.VITE_FIREBASE_APP_ID': JSON.stringify(env.VITE_FIREBASE_APP_ID || ''),
+      'import.meta.env.VITE_FIREBASE_MEASUREMENT_ID': JSON.stringify(env.VITE_FIREBASE_MEASUREMENT_ID || ''),
     },
   build: {
     outDir: 'dist',
@@ -39,6 +47,7 @@ export default defineConfig(({ mode }) => {
         options: resolve(__dirname, 'src/options/index.html'),
         background: resolve(__dirname, 'src/background/index.ts'),
         offscreen: resolve(__dirname, 'src/offscreen/offscreen.html'),
+        'auth-offscreen': resolve(__dirname, 'src/offscreen/auth-offscreen.html'),
       },
       output: {
         entryFileNames: (chunkInfo) => {

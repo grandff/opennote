@@ -33,14 +33,52 @@ let lastStoppedRecording: {
   timestamp: number;
 } | null = null;
 
+// Realtime 오디오 청크 수신 리스너 (popup으로 전달용)
+let realtimeListenerPort: chrome.runtime.Port | null = null;
+
+// 연결 리스너 - popup에서 연결 시 포트 저장
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name === 'realtime-audio') {
+    console.log('[Background] Realtime audio port connected');
+    realtimeListenerPort = port;
+    
+    port.onDisconnect.addListener(() => {
+      console.log('[Background] Realtime audio port disconnected');
+      realtimeListenerPort = null;
+    });
+  }
+});
+
 // 메시지 리스너
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  console.log('Background received message:', message);
+  // 로그 제외하고 출력
+  if (message.type !== 'OFFSCREEN_LOG' && message.type !== 'REALTIME_AUDIO_CHUNK') {
+    console.log('Background received message:', message);
+  }
 
     // Offscreen 로그 받기
     if (message.type === 'OFFSCREEN_LOG') {
       console.log(`[OFFSCREEN] ${message.message}`, message.data || '');
       return;
+    }
+
+    // ===== Realtime 오디오 청크 처리 =====
+    if (message.type === 'REALTIME_AUDIO_CHUNK') {
+      // Popup으로 전달 (포트가 연결되어 있을 때만)
+      if (realtimeListenerPort) {
+        try {
+          realtimeListenerPort.postMessage({
+            type: 'REALTIME_AUDIO_CHUNK',
+            audioChunk: message.audioChunk,
+            chunkSize: message.chunkSize,
+            mimeType: message.mimeType,
+          });
+        } catch (error) {
+          // 전송 실패해도 무시 (녹음에 영향 없음)
+          console.warn('[Background] Failed to send audio chunk to popup:', error);
+        }
+      }
+      return; // 빠른 반환 (응답 필요 없음)
     }
 
     // 최대 크기 도달 알림

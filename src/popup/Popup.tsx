@@ -63,19 +63,14 @@ const Popup: React.FC = () => {
   };
 
   // Transcription 화면으로 이동
-  const onTranscribe = () => {
+  const [transcriptionLanguage, setTranscriptionLanguage] = useState<string>('ko');
+  
+  const onTranscribe = (language: string) => {
+    setTranscriptionLanguage(language);
     setCurrentScreen('transcription');
-    // TODO: Transcription 화면 구현
   };
 
   // 녹음 삭제
-  const onDelete = () => {
-    if (currentRecording?.audioUrl) {
-      URL.revokeObjectURL(currentRecording.audioUrl);
-    }
-    handleReset();
-    setCurrentScreen('recording');
-  };
 
   // 새 녹음 시작
   const onNewRecording = () => {
@@ -87,24 +82,14 @@ const Popup: React.FC = () => {
   };
 
   // Header 액션들
-  const handleProfileClick = () => {
-    console.log('Profile clicked');
-    // TODO: Profile 페이지로 이동
-  };
-
-  const handleSettingClick = () => {
-    console.log('Setting clicked');
-    chrome.runtime.openOptionsPage();
-  };
-
   const handleHistoryClick = () => {
     console.log('History clicked');
     // TODO: History 페이지로 이동
   };
 
-  const handlePaymentClick = () => {
-    console.log('Payment clicked');
-    // TODO: Payment 페이지로 이동
+  const handlePremiumClick = () => {
+    console.log('Premium clicked');
+    // TODO: Premium 페이지로 이동
   };
 
   // Footer 액션들
@@ -132,10 +117,8 @@ const Popup: React.FC = () => {
     <div className="w-full min-h-screen flex flex-col bg-white">
       {/* Header */}
       <Header
-        onProfileClick={handleProfileClick}
-        onSettingClick={handleSettingClick}
         onHistoryClick={handleHistoryClick}
-        onPaymentClick={handlePaymentClick}
+        onPremiumClick={handlePremiumClick}
       />
 
       {/* Body */}
@@ -156,13 +139,15 @@ const Popup: React.FC = () => {
             duration={currentRecording.duration}
             timestamp={currentRecording.timestamp}
             onTranscribe={onTranscribe}
-            onDelete={onDelete}
             onNewRecording={onNewRecording}
           />
         )}
 
         {currentScreen === 'transcription' && (
-          <TranscriptionScreen onBack={() => setCurrentScreen('complete')} />
+          <TranscriptionScreen 
+            language={transcriptionLanguage}
+            onBack={() => setCurrentScreen('complete')} 
+          />
         )}
       </main>
 

@@ -1,0 +1,15 @@
+{
+  "appName": {
+    "message": "opennote - Free AI Transcription",
+    "description": "익스텐션 이름"
+  },
+  "appShortName": {
+    "message": "opennote",
+    "description": "익스텐션 짧은 이름"
+  },
+  "appDescription": {
+    "message": "무료로 브라우저 오디오를 녹음하고, 텍스트로 변환 해보세요.",
+    "description": "익스텐션 설명"
+  }
+}
+

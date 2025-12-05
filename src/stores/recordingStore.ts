@@ -1,5 +1,6 @@
 import { create } from 'zustand';
-import { Recording, RecordingStatus } from '@/types/recording';
+import { Recording, RecordingStatus, AudioSegment } from '@/types/recording';
+import { RECORDING_LIMITS } from '@/utils/constants';
 
 interface RecordingStore {
   // 상태
@@ -8,6 +9,12 @@ interface RecordingStore {
   recordings: Recording[];
   startTime: number | null;
   elapsedTime: number;
+  
+  // 세그먼트 관련 상태
+  currentSegments: AudioSegment[]; // 현재 녹음의 세그먼트 목록
+  currentSegmentIndex: number; // 현재 세그먼트 인덱스
+  segmentStartTime: number; // 현재 세그먼트 시작 시간 (초)
+  isPremiumUser: boolean; // 유료 사용자 여부
 
   // 액션
   setStatus: (status: RecordingStatus) => void;
@@ -18,6 +25,13 @@ interface RecordingStore {
   addRecording: (recording: Recording) => void;
   deleteRecording: (id: string) => void;
   reset: () => void;
+  
+  // 세그먼트 관련 액션
+  setIsPremiumUser: (isPremium: boolean) => void;
+  addSegment: (blob: Blob) => void;
+  getMaxDuration: () => number;
+  shouldSplitSegment: () => boolean;
+  finalizeSegment: (blob: Blob) => void;
 }
 
 const useRecordingStore = create<RecordingStore>((set, get) => ({
@@ -27,6 +41,12 @@ const useRecordingStore = create<RecordingStore>((set, get) => ({
   recordings: [],
   startTime: null,
   elapsedTime: 0,
+  
+  // 세그먼트 관련 초기 상태
+  currentSegments: [],
+  currentSegmentIndex: 0,
+  segmentStartTime: 0,
+  isPremiumUser: false, // 기본값: 무료 사용자
 
   // 액션
   setStatus: (status) => set({ status }),
@@ -38,6 +58,7 @@ const useRecordingStore = create<RecordingStore>((set, get) => ({
       timestamp: now,
       duration: 0,
       isPaused: false,
+      audioSegments: [],
     };
 
     set({
@@ -45,6 +66,9 @@ const useRecordingStore = create<RecordingStore>((set, get) => ({
       currentRecording: newRecording,
       startTime: now,
       elapsedTime: 0,
+      currentSegments: [],
+      currentSegmentIndex: 0,
+      segmentStartTime: 0,
     });
   },
 
@@ -54,9 +78,10 @@ const useRecordingStore = create<RecordingStore>((set, get) => ({
     console.log('Blob type:', audioBlob?.type);
     
     const state = get();
-    const { currentRecording, elapsedTime } = state;
+    const { currentRecording, elapsedTime, currentSegments, segmentStartTime, isPremiumUser } = state;
     console.log('Current recording:', currentRecording);
     console.log('Elapsed time:', elapsedTime);
+    console.log('Current segments:', currentSegments.length);
     
     if (!currentRecording) {
       console.error('No current recording to stop!');
@@ -80,21 +105,41 @@ const useRecordingStore = create<RecordingStore>((set, get) => ({
       
       console.log('Using duration:', finalDuration, '(original elapsedTime:', elapsedTime, ')');
       
+      // 유료 사용자이고 세그먼트가 있는 경우, 마지막 세그먼트 추가
+      let finalSegments = [...currentSegments];
+      if (isPremiumUser && finalDuration > RECORDING_LIMITS.SEGMENT_DURATION) {
+        // 마지막 세그먼트 추가 (현재 블롭이 마지막 세그먼트)
+        const lastSegment: AudioSegment = {
+          id: `segment-${Date.now()}-${currentSegments.length}`,
+          index: currentSegments.length,
+          startTime: segmentStartTime,
+          endTime: finalDuration,
+          duration: finalDuration - segmentStartTime,
+          blob: audioBlob,
+          url: audioUrl,
+        };
+        finalSegments = [...currentSegments, lastSegment];
+        console.log('Added final segment:', lastSegment);
+      }
+      
       const finalRecording: Recording = {
         ...currentRecording,
         duration: finalDuration,
-        audioBlob,
-        audioUrl,
+        audioBlob: finalSegments.length === 0 ? audioBlob : undefined, // 세그먼트가 없으면 단일 파일
+        audioUrl: finalSegments.length === 0 ? audioUrl : undefined,
+        audioSegments: finalSegments.length > 0 ? finalSegments : undefined, // 세그먼트가 있으면 세그먼트 목록
         isPaused: false,
       };
 
       console.log('Final recording:', finalRecording);
+      console.log('Total segments:', finalSegments.length);
       console.log('Setting status to stopped - this should stop the timer');
 
       set({
         status: 'stopped',
         currentRecording: finalRecording,
         elapsedTime: finalDuration, // duration과 동기화
+        currentSegments: finalSegments,
       });
       
       console.log('Store updated successfully, status is now:', get().status);
@@ -136,8 +181,89 @@ const useRecordingStore = create<RecordingStore>((set, get) => ({
       currentRecording: null,
       startTime: null,
       elapsedTime: 0,
+      currentSegments: [],
+      currentSegmentIndex: 0,
+      segmentStartTime: 0,
     });
     console.log('Store: reset complete, status:', get().status);
+  },
+
+  // 세그먼트 관련 액션
+  setIsPremiumUser: (isPremium) => set({ isPremiumUser: isPremium }),
+
+  addSegment: (blob) => {
+    const state = get();
+    const { currentSegmentIndex, segmentStartTime, elapsedTime } = state;
+    
+    const segment: AudioSegment = {
+      id: `segment-${Date.now()}-${currentSegmentIndex}`,
+      index: currentSegmentIndex,
+      startTime: segmentStartTime,
+      endTime: elapsedTime,
+      duration: elapsedTime - segmentStartTime,
+      blob,
+      url: URL.createObjectURL(blob),
+    };
+
+    set({
+      currentSegments: [...state.currentSegments, segment],
+      currentSegmentIndex: currentSegmentIndex + 1,
+      segmentStartTime: elapsedTime,
+    });
+
+    console.log(`[Recording] Segment ${currentSegmentIndex} added:`, {
+      startTime: segment.startTime,
+      endTime: segment.endTime,
+      duration: segment.duration,
+      blobSize: blob.size,
+    });
+  },
+
+  getMaxDuration: () => {
+    const { isPremiumUser } = get();
+    return isPremiumUser 
+      ? RECORDING_LIMITS.PREMIUM_MAX_DURATION 
+      : RECORDING_LIMITS.FREE_MAX_DURATION;
+  },
+
+  shouldSplitSegment: () => {
+    const { elapsedTime, segmentStartTime, isPremiumUser } = get();
+    if (!isPremiumUser) return false;
+    
+    const currentSegmentDuration = elapsedTime - segmentStartTime;
+    return currentSegmentDuration >= RECORDING_LIMITS.SEGMENT_DURATION;
+  },
+
+  finalizeSegment: (blob) => {
+    const state = get();
+    const { currentSegmentIndex, segmentStartTime, elapsedTime } = state;
+    
+    const segment: AudioSegment = {
+      id: `segment-${Date.now()}-${currentSegmentIndex}`,
+      index: currentSegmentIndex,
+      startTime: segmentStartTime,
+      endTime: elapsedTime,
+      duration: elapsedTime - segmentStartTime,
+      blob,
+      url: URL.createObjectURL(blob),
+    };
+
+    const updatedSegments = [...state.currentSegments, segment];
+    
+    // currentRecording 업데이트
+    if (state.currentRecording) {
+      set({
+        currentSegments: updatedSegments,
+        currentRecording: {
+          ...state.currentRecording,
+          audioSegments: updatedSegments,
+        },
+      });
+    }
+
+    console.log(`[Recording] Final segment ${currentSegmentIndex} added:`, {
+      totalSegments: updatedSegments.length,
+    });
   },
 }));
 

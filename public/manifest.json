@@ -1,8 +1,10 @@
 {
   "manifest_version": 3,
-  "name": "Audio Record & Transcription",
+  "name": "__MSG_appName__",
+  "short_name": "__MSG_appShortName__",
+  "default_locale": "en",
   "version": "1.0.0",
-  "description": "브라우저 오디오를 녹음하고 텍스트로 변환 및 요약하는 크롬 익스텐션",
+  "description": "__MSG_appDescription__",
   "permissions": [
     "tabCapture",
     "storage",
@@ -20,7 +22,7 @@
     "type": "module"
   },
   "action": {
-    "default_title": "Audio Record & Transcription"
+    "default_title": "__MSG_appName__"
   },
   "side_panel": {
     "default_path": "src/popup/index.html"
@@ -30,5 +32,3 @@
     "extension_pages": "script-src 'self'; object-src 'self'"
   }
 }
-
-
